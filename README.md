@@ -1,4 +1,4 @@
-# Polaris Auth gRPC Service
+# Polaris Auth HTTP Service
 
 基于 Kiro Auth (AWS OIDC SSO) 的完整 OAuth 授权服务，自动完成 PKCE 交换流程。
 
@@ -32,121 +32,165 @@
 
 ## 快速开始
 
-### 启动服务器
+### 安装依赖
 
 ```bash
-make build
-make run
-# 或指定端口: ./bin/auth-server -port 50051
+pip install -r requirements.txt
+```
+
+### 启动服务器
+
+Windows用户：
+```bash
+start.bat
+```
+
+或直接运行：
+```bash
+python main.py
 ```
 
 服务器启动后：
-- 监听 gRPC 端口（默认 50051）
+- 监听 HTTP 端口（默认 8000）
 - Windows 上自动注册 `kiro://` 协议处理
 
-## gRPC API
+## HTTP API
 
-### GenerateAuthURL
+### 1. 生成单个授权 URL
 
-生成单个授权 URL
+**端点**: `POST /generate-auth-url`
 
-**请求：**
-```protobuf
-message GenerateAuthURLRequest {
-  string idp = 1;  // 身份提供商，首字母大写 (Google, Github, Gitlab)
+**请求体**:
+```json
+{
+  "idp": "Google"  // 身份提供商，首字母大写 (Google, Github, Gitlab)
 }
 ```
 
-**响应：**
-```protobuf
-message GenerateAuthURLResponse {
-  string auth_url = 1;        // 授权URL
-  string state = 2;           // state参数
-  string code_verifier = 3;   // PKCE code verifier
-  string code_challenge = 4;  // PKCE code challenge
+**响应**:
+```json
+{
+  "auth_url": "https://prod.us-east-1.auth.desktop.kiro.dev/login?...",
+  "state": "EVb7GbAX3whRNBfnkcNsHw",
+  "code_verifier": "ss-QB1mks31x3UeleN9y2Dr_S7NJx30ZjLolT8vv95I",
+  "code_challenge": "n8kHSh7ZHFm1YSeEbC-s4l_JN6CyfYusljcLiaXEElE"
 }
 ```
 
-### GenerateAuthURLs
-
-批量生成授权 URL（并发执行）
-
-**请求：**
-```protobuf
-message GenerateAuthURLsRequest {
-  string idp = 1;   // 身份提供商，首字母大写 (Google, Github, Gitlab)
-  int32 count = 2;  // 生成数量（1-1000）
-}
-```
-
-**响应：**
-```protobuf
-message GenerateAuthURLsResponse {
-  repeated GenerateAuthURLResponse urls = 1;  // URL列表
-}
-```
-
-## 使用示例
-
-### 使用 grpcurl 测试
-
+**示例**:
 ```bash
-# 生成单个授权URL（注意IDP首字母大写）
-grpcurl -plaintext -d '{"idp":"Google"}' \
-  localhost:50051 auth.AuthService/GenerateAuthURL
-
-grpcurl -plaintext -d '{"idp":"Google"}'  localhost:50051 auth.AuthService\GenerateAuthURL
-
-# 批量生成10个授权URL
-grpcurl -plaintext -d '{"idp":"Github","count":10}' \
-  localhost:50051 auth.AuthService/GenerateAuthURLs
+curl -X POST "http://localhost:8000/generate-auth-url" \
+     -H "Content-Type: application/json" \
+     -d '{"idp":"Google"}'
 ```
 
-### ReportCallback
+### 2. 批量生成授权 URL
 
-**内部使用**：由 Windows URI scheme 触发，上报回调并自动完成 PKCE 交换。
+**端点**: `POST /generate-auth-urls`
 
-**请求：**
-```protobuf
-message ReportCallbackRequest {
-  string raw = 1;           // 完整的回调 URL
-  int64 received_at = 2;    // 接收时间戳（毫秒）
+**请求体**:
+```json
+{
+  "idp": "Github",  // 身份提供商，首字母大写 (Google, Github, Gitlab)
+  "count": 10       // 生成数量（1-1000）
 }
 ```
 
-**响应：**
-```protobuf
-message ReportCallbackResponse {
-  bool ok = 1;
-  string error = 2;         // 非空表示失败（如 state 验证失败）
+**响应**:
+```json
+{
+  "urls": [
+    {
+      "auth_url": "https://prod.us-east-1.auth.desktop.kiro.dev/login?...",
+      "state": "EVb7GbAX3whRNBfnkcNsHw",
+      "code_verifier": "ss-QB1mks31x3UeleN9y2Dr_S7NJx30ZjLolT8vv95I",
+      "code_challenge": "n8kHSh7ZHFm1YSeEbC-s4l_JN6CyfYusljcLiaXEElE"
+    },
+    // 更多URL...
+  ]
 }
 ```
 
-### FetchAndClearCallbacks
-
-**拉取所有已完成 PKCE 交换的 OAuth 凭证**，并清空存储。
-
-**请求：**
-```protobuf
-message FetchAndClearCallbacksRequest {}
+**示例**:
+```bash
+curl -X POST "http://localhost:8000/generate-auth-urls" \
+     -H "Content-Type: application/json" \
+     -d '{"idp":"Github","count":10}'
 ```
 
-**响应：**
-```protobuf
-message FetchAndClearCallbacksResponse {
-  repeated OAuthCredential credentials = 1;
-}
+### 3. 上报回调
 
-message OAuthCredential {
-  string access_token = 1;      // 访问令牌
-  string refresh_token = 2;     // 刷新令牌
-  string id_token = 3;          // ID 令牌
-  string token_type = 4;        // 令牌类型（通常为 Bearer）
-  int32 expires_in = 5;         // 过期时间（秒）
-  string profile_arn = 6;       // Profile ARN
-  int64 received_at = 7;        // 接收时间戳（毫秒）
-  string state = 8;             // 原始 state（用于客户端关联）
+**端点**: `POST /report-callback`
+
+**请求体**:
+```json
+{
+  "raw": "kiro://kiro.kiroAgent/authenticate-success?code=xxx&state=yyy",  // 完整的回调 URL
+  "received_at": 1699876543210  // 接收时间戳（毫秒）
 }
+```
+
+**响应**:
+```json
+{
+  "ok": true,
+  "error": ""  // 非空表示失败（如 state 验证失败）
+}
+```
+
+**示例**:
+```bash
+curl -X POST "http://localhost:8000/report-callback" \
+     -H "Content-Type: application/json" \
+     -d '{"raw":"kiro://kiro.kiroAgent/authenticate-success?code=xxx&state=yyy","received_at":1699876543210}'
+```
+
+### 4. 获取并清空凭证
+
+**端点**: `GET /fetch-and-clear-callbacks`
+
+**响应**:
+```json
+{
+  "credentials": [
+    {
+      "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_token": "v1.MRqPxaBmYzjm...",
+      "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "profile_arn": "arn:aws:iam::...",
+      "received_at": 1699876543210,
+      "state": "EVb7GbAX3whRNBfnkcNsHw"
+    }
+    // 更多凭证...
+  ]
+}
+```
+
+**示例**:
+```bash
+curl -X GET "http://localhost:8000/fetch-and-clear-callbacks"
+```
+
+## 工作流程
+
+```
+1. 客户端调用 /generate-auth-url 或 /generate-auth-urls
+   └─> 服务端生成授权 URL 并保存 state → code_verifier 映射
+
+2. 用户在浏览器完成第三方登录
+   └─> 浏览器重定向到 kiro://kiro.kiroAgent/authenticate-success?code=xxx&state=yyy
+
+3. Windows 触发自定义协议，启动 auth-server -report "完整URL"
+   └─> 服务端：
+       - 解析 URL 提取 code 和 state
+       - 验证 state（防 CSRF）
+       - 使用对应的 code_verifier 完成 PKCE token 交换
+       - 保存已交换的 OAuth 凭证
+
+4. 客户端调用 /fetch-and-clear-callbacks
+   └─> 获取所有已完成交换的 OAuth 凭证（access_token、refresh_token 等）
 ```
 
 ## 使用示例
@@ -155,36 +199,36 @@ message OAuthCredential {
 
 ```bash
 # 1. 生成授权 URL
-grpcurl -plaintext -d '{"idp":"Google"}' \
-  localhost:50051 auth.AuthService/GenerateAuthURL
+curl -X POST "http://localhost:8000/generate-auth-url" \
+     -H "Content-Type: application/json" \
+     -d '{"idp":"Google"}'
 
 # 响应示例：
 # {
-#   "authUrl": "https://prod.us-east-1.auth.desktop.kiro.dev/login?...",
+#   "auth_url": "https://prod.us-east-1.auth.desktop.kiro.dev/login?...",
 #   "state": "EVb7GbAX3whRNBfnkcNsHw",
-#   "codeVerifier": "ss-QB1mks31x3UeleN9y2Dr_S7NJx30ZjLolT8vv95I",
-#   "codeChallenge": "n8kHSh7ZHFm1YSeEbC-s4l_JN6CyfYusljcLiaXEElE"
+#   "code_verifier": "ss-QB1mks31x3UeleN9y2Dr_S7NJx30ZjLolT8vv95I",
+#   "code_challenge": "n8kHSh7ZHFm1YSeEbC-s4l_JN6CyfYusljcLiaXEElE"
 # }
 
-# 2. 用户在浏览器中访问 authUrl 完成登录
+# 2. 用户在浏览器中访问 auth_url 完成登录
 #    浏览器自动重定向到 kiro://... 触发回调
 #    服务端自动完成 PKCE 交换
 
 # 3. 获取已交换的 OAuth 凭证
-grpcurl -plaintext -d '{}' \
-  localhost:50051 auth.AuthService/FetchAndClearCallbacks
+curl -X GET "http://localhost:8000/fetch-and-clear-callbacks"
 
 # 响应示例：
 # {
 #   "credentials": [
 #     {
-#       "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-#       "refreshToken": "v1.MRqPxaBmYzjm...",
-#       "idToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-#       "tokenType": "Bearer",
-#       "expiresIn": 3600,
-#       "profileArn": "arn:aws:iam::...",
-#       "receivedAt": "1699876543210",
+#       "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+#       "refresh_token": "v1.MRqPxaBmYzjm...",
+#       "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+#       "token_type": "Bearer",
+#       "expires_in": 3600,
+#       "profile_arn": "arn:aws:iam::...",
+#       "received_at": 1699876543210,
 #       "state": "EVb7GbAX3whRNBfnkcNsHw"
 #     }
 #   ]
@@ -195,8 +239,9 @@ grpcurl -plaintext -d '{}' \
 
 ```bash
 # 批量生成 10 个授权 URL
-grpcurl -plaintext -d '{"idp":"Github","count":10}' \
-  localhost:50051 auth.AuthService/GenerateAuthURLs
+curl -X POST "http://localhost:8000/generate-auth-urls" \
+     -H "Content-Type: application/json" \
+     -d '{"idp":"Github","count":10}'
 ```
 
 ## 故障排除
@@ -223,7 +268,27 @@ grpcurl -plaintext -d '{"idp":"Github","count":10}' \
 
 ### 客户端实现
 
-本项目**仅提供 gRPC 服务端**，不包含客户端实现。开发者需要根据 `proto/auth.proto` 定义自行实现客户端，支持任何语言（Go、Python、Java、JavaScript 等）。
+本项目**仅提供 HTTP 服务端**，不包含客户端实现。开发者可以根据 API 定义自行实现客户端，支持任何语言（Python、JavaScript、Java 等）。
+
+## 开发说明
+
+### 数据库
+
+应用使用 SQLite 数据库存储 state 映射和 OAuth 凭证。数据库文件 `polaris_auth.db` 会在首次运行时自动创建。
+
+### 日志
+
+应用使用 Python 标准日志库记录重要事件。日志级别可在 `main.py` 中配置。
+
+### 自定义配置
+
+可以通过修改 `main.py` 中的以下常量来自定义应用行为：
+
+```python
+KIRO_AUTH_DOMAIN = "prod.us-east-1.auth.desktop.kiro.dev"  # Kiro Auth 域名
+STATE_EXPIRY = 10 * 60  # state 过期时间（秒）
+CODE_EXPIRY = 10 * 60  # code 过期时间（秒）
+```
 
 ## License
 
